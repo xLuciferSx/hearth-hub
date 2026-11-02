@@ -1,7 +1,6 @@
 .env
 deploy/.env
-deploy/zigbee2mqtt/*
-!deploy/zigbee2mqtt/configuration.example.yaml
+deploy/data/
 *.p8
 *.pem
 *.key
