@@ -1,75 +1,218 @@
-# Hearth hub — runs anywhere Docker runs (Synology, Raspberry Pi, any Linux box).
-# All components are free/open source: Mosquitto, Go services, distroless images.
+# Hearth: a self-hosted smart-home hub. Runs on a Synology NAS or any Linux box with Docker.
+# Everything it keeps is in one folder, HEARTH_DATA. Start with ./hearth.sh setup.
 name: hearth
 
+x-base: &base
+  restart: unless-stopped
+  security_opt: ["no-new-privileges:true"]
+  logging:
+    driver: json-file
+    options: { max-size: 10m, max-file: "3" }
+
+x-service: &service
+  <<: *base
+  env_file: .env
+  depends_on:
+    init: { condition: service_completed_successfully }
+    mosquitto: { condition: service_healthy }
+  mem_limit: 256m
+  read_only: true
+  tmpfs: [/tmp]
+  cap_drop: [ALL]
+  # healthy while connected to the bus; a service cut off for 5 minutes exits and is restarted
+  healthcheck:
+    test: ["CMD", "/service", "healthcheck"]
+    interval: 30s
+    timeout: 5s
+    start_period: 60s
+    retries: 3
+
 services:
+  # Runs once on every start: makes the folders, sets their owners, creates the admin token and
+  # the Zigbee2MQTT settings. It never changes a file that already exists.
+  init:
+    image: alpine:3.24.3
+    network_mode: none
+    entrypoint: ["/bin/sh", "/init.sh"]
+    environment:
+      ZIGBEE_PORT: ${ZIGBEE_PORT:-/dev/zigbee}
+      ZIGBEE_ADAPTER: ${ZIGBEE_ADAPTER:-}
+      ZIGBEE_CHANNEL: ${ZIGBEE_CHANNEL:-25}
+    volumes:
+      - ./init.sh:/init.sh:ro
+      - ${HEARTH_DATA:-./data}:/state
+
   mosquitto:
-    image: eclipse-mosquitto:2
-    restart: unless-stopped
+    <<: *base
+    image: eclipse-mosquitto:2.1.2-alpine
+    depends_on:
+      init: { condition: service_completed_successfully }
+    mem_limit: 64m
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "1883"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
     volumes:
       - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
-      - mosquitto-data:/mosquitto/data
-    # Not published: only the services on this compose network can reach the bus.
+      - ${HEARTH_DATA:-./data}/mosquitto:/mosquitto/data
+    ports:
+      - "127.0.0.1:18831:1883" # for the services on the host network; never the LAN
 
   gateway:
-    build:
-      context: ..
-      args: { SERVICE: gateway }
-    restart: unless-stopped
-    env_file: .env
+    <<: *service
+    image: ${HEARTH_IMAGES:-ghcr.io/xlucifersx/hearth}-gateway:${HEARTH_VERSION:-0.1.0}
     environment:
       MQTT_URL: tcp://mosquitto:1883
+      HUB_ROLE: production
+      HUB_ACTIVE: "true"
+      HOMEAPP_TOKEN_FILE: /data/admin-token
+      CONTAINER_PREFIX: hearth-
       TZ: ${TZ:-UTC}
     ports:
-      - "8780:8780"   # the app connects here (LAN only; see SECURITY.md before exposing it)
+      - "${HEARTH_PORT:-8780}:8780" # the app connects here; see SECURITY.md before exposing it
     volumes:
-      - gateway-data:/data   # hub identity key + member list; keep it across updates
-    depends_on: [mosquitto]
-
-  bridge-homeassistant:
-    build:
-      context: ..
-      args: { SERVICE: bridge-homeassistant }
-    restart: unless-stopped
-    env_file: .env
-    environment:
-      MQTT_URL: tcp://mosquitto:1883
-      TZ: ${TZ:-UTC}
-    depends_on: [mosquitto]
+      - ${HEARTH_DATA:-./data}/gateway:/data
+      - ${HEARTH_DATA:-./data}/backups:/backups:ro # only to see that they're being made
 
   bridge-zigbee:
-    build:
-      context: ..
-      args: { SERVICE: bridge-zigbee }
-    restart: unless-stopped
-    env_file: .env   # Z2M_MQTT_* points at wherever Zigbee2MQTT runs
+    <<: *service
+    image: ${HEARTH_IMAGES:-ghcr.io/xlucifersx/hearth}-bridge-zigbee:${HEARTH_VERSION:-0.1.0}
     environment:
       MQTT_URL: tcp://mosquitto:1883
+      HUB_ROLE: production
       TZ: ${TZ:-UTC}
     volumes:
-      - zigbee-data:/data    # last reading per sensor, so a restart doesn't blank sleepy sensors
-    depends_on: [mosquitto]
+      - ${HEARTH_DATA:-./data}/zigbee:/data # last reading per sensor, so a restart doesn't blank sleepy sensors
 
-  # Optional: run Zigbee2MQTT here, when no other program (such as Home Assistant)
-  # holds the Zigbee dongle — a dongle can be opened by one program only.
-  # Remove Z2M_MQTT_* from .env, copy zigbee2mqtt/configuration.example.yaml
-  # to configuration.yaml, and run:  docker compose --profile zigbee up -d
-  zigbee2mqtt:
-    image: koenkk/zigbee2mqtt:2
-    profiles: [zigbee]
-    restart: unless-stopped
+  # bridge-native and matter-server share the machine's own network: Matter, Thread, mDNS and
+  # Wake-on-LAN need the real LAN (and IPv6), not Docker's. Both only listen on localhost.
+  bridge-native:
+    <<: *service
+    image: ${HEARTH_IMAGES:-ghcr.io/xlucifersx/hearth}-bridge-native:${HEARTH_VERSION:-0.1.0}
+    network_mode: host
+    environment:
+      MQTT_URL: tcp://127.0.0.1:18831
+      HUB_ROLE: production
+      TZ: ${TZ:-UTC}
+      MATTER_URL: ws://127.0.0.1:5580/ws
     volumes:
-      - ./zigbee2mqtt:/app/data
+      - ${HEARTH_DATA:-./data}/native:/data
+      - ${HEARTH_DATA:-./data}/eufy-ws-config:/eufy-ws
+
+  # The Matter controller, from the Open Home Foundation. It is a standalone server; it does not
+  # need Home Assistant. Its websocket has no login, so it listens on localhost only.
+  matter-server:
+    <<: *base
+    image: ghcr.io/home-assistant-libs/python-matter-server:8.1.0
+    depends_on:
+      init: { condition: service_completed_successfully }
+    network_mode: host
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import socket; socket.create_connection(('127.0.0.1', 5580), 3)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+    entrypoint: ["/bin/sh", "/matter.sh"]
+    environment:
+      MATTER_INTERFACE: ${MATTER_INTERFACE:-}
+    volumes:
+      - ./matter.sh:/matter.sh:ro
+      - ${HEARTH_DATA:-./data}/matter:/data
+
+  # Nightly copies of everything in HEARTH_DATA, in HEARTH_DATA/backups. 14 are kept.
+  backup:
+    <<: *base
+    image: alpine:3.24.3
+    depends_on:
+      init: { condition: service_completed_successfully }
+    mem_limit: 128m
+    entrypoint: ["/bin/sh", "/backup.sh"]
+    environment:
+      TZ: ${TZ:-UTC}
+    healthcheck:
+      test: ["CMD-SHELL", "find /backups -name 'hearth-*.tar.gz' -mtime -2 | grep -q ."]
+      interval: 1h
+      timeout: 10s
+      start_period: 10m
+    volumes:
+      - ./backup.sh:/backup.sh:ro
+      - ${HEARTH_DATA:-./data}:/state:ro
+      - ${HEARTH_DATA:-./data}/backups:/backups
+
+  # COMPOSE_PROFILES=zigbee turns this on, once a coordinator is set in .env.
+  zigbee2mqtt:
+    <<: *base
+    image: koenkk/zigbee2mqtt:2.14.2
+    profiles: [zigbee]
+    depends_on:
+      init: { condition: service_completed_successfully }
+      mosquitto: { condition: service_healthy }
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-T", "3", "-O", "/dev/null", "http://127.0.0.1:8080"]
+      interval: 60s
+      timeout: 5s
+      start_period: 60s
+    volumes:
+      - ${HEARTH_DATA:-./data}/zigbee2mqtt:/app/data
+    devices:
+      - ${ZIGBEE_DEVICE:-/dev/null}:/dev/zigbee
     environment:
       TZ: ${TZ:-UTC}
     ports:
-      - "8781:8080"   # Zigbee2MQTT web UI: pairing and naming ("Room/Device")
-    # USB coordinator plugged into the NAS (not needed for a network coordinator):
-    # devices:
-    #   - /dev/ttyUSB0:/dev/ttyUSB0
-    depends_on: [mosquitto]
+      - "${ZIGBEE_UI_PORT:-8099}:8080" # web UI: naming devices. Its token is in zigbee2mqtt/configuration.yaml
 
-volumes:
-  mosquitto-data:
-  gateway-data:
-  zigbee-data:
+  # COMPOSE_PROFILES=extras turns on the two below.
+  # Lets Alexa, Google Home and others add Hearth as one Matter bridge. Idle until it's added in
+  # the app's Integrations.
+  matter-bridge:
+    <<: *service
+    image: ${HEARTH_IMAGES:-ghcr.io/xlucifersx/hearth}-matter-bridge:${HEARTH_VERSION:-0.1.0}
+    profiles: [extras]
+    network_mode: host
+    environment:
+      MQTT_URL: tcp://127.0.0.1:18831
+    healthcheck:
+      test: ["CMD", "node", "-e", "process.exit(Date.now() - require('fs').statSync('/tmp/alive').mtimeMs < 120000 ? 0 : 1)"]
+      interval: 60s
+      timeout: 5s
+      start_period: 30s
+    volumes:
+      - ${HEARTH_DATA:-./data}/matter-bridge:/data
+
+  # eufy's pictures stay on the HomeBase, behind eufy's P2P protocol. eufy-security-ws speaks it.
+  # Its websocket has no login, so it listens on localhost only. Waits until eufy is added.
+  eufy-ws:
+    <<: *base
+    image: bropat/eufy-security-ws:3.1.0
+    profiles: [extras]
+    depends_on:
+      init: { condition: service_completed_successfully }
+    network_mode: host
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD-SHELL", "[ ! -s /config/config.json ] || node -e \"require('net').connect(3201, '127.0.0.1').on('connect', () => process.exit(0)).on('error', () => process.exit(1))\""]
+      interval: 60s
+      timeout: 5s
+      start_period: 120s
+    entrypoint: ["/bin/sh", "-c", "until [ -s /config/config.json ]; do sleep 10; done; exec /usr/local/bin/node /usr/src/app/dist/bin/server.js --host 127.0.0.1 --port 3201 --config /config/config.json"]
+    volumes:
+      - ${HEARTH_DATA:-./data}/eufy-ws:/data
+      - ${HEARTH_DATA:-./data}/eufy-ws-config:/config:ro
+
+  # COMPOSE_PROFILES=watchdog turns this on. Docker only restarts what exits, so this restarts what
+  # has hung. It holds the Docker socket, so it's opt-in; it has no network, and it stops after
+  # three restarts in an hour rather than make things worse.
+  watchdog:
+    <<: *base
+    image: docker:27.5.1-cli
+    profiles: [watchdog]
+    mem_limit: 48m
+    network_mode: none
+    entrypoint: ["/bin/sh", "/watchdog.sh"]
+    volumes:
+      - ./watchdog.sh:/watchdog.sh:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${HEARTH_DATA:-./data}/backups:/log
