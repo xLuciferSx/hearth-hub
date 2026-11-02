@@ -20,7 +20,7 @@ Turn on SSH in **Control Panel > Terminal & SNMP**, sign in, and run:
 ```bash
 sudo mkdir -p /volume1/docker/hearth
 cd /volume1/docker/hearth
-sudo git clone https://github.com/xLuciferSx/synology-homeassistant-gateway.git src
+sudo git clone https://github.com/xLuciferSx/hearth-hub.git src
 sudo cp -a src/deploy/. .
 sudo ./hearth.sh setup
 ```
