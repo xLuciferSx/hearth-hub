@@ -61,7 +61,7 @@ services:
 
   gateway:
     <<: *service
-    image: ${HEARTH_IMAGES:-ghcr.io/xlucifersx/hearth}-gateway:${HEARTH_VERSION:-0.1.0}
+    image: ${HEARTH_IMAGES:-ghcr.io/xlucifersx/hearth}-gateway:${HEARTH_VERSION:-0.1.1}
     environment:
       MQTT_URL: tcp://mosquitto:1883
       HUB_ROLE: production
@@ -77,7 +77,7 @@ services:
 
   bridge-zigbee:
     <<: *service
-    image: ${HEARTH_IMAGES:-ghcr.io/xlucifersx/hearth}-bridge-zigbee:${HEARTH_VERSION:-0.1.0}
+    image: ${HEARTH_IMAGES:-ghcr.io/xlucifersx/hearth}-bridge-zigbee:${HEARTH_VERSION:-0.1.1}
     environment:
       MQTT_URL: tcp://mosquitto:1883
       HUB_ROLE: production
@@ -89,7 +89,7 @@ services:
   # Wake-on-LAN need the real LAN (and IPv6), not Docker's. Both only listen on localhost.
   bridge-native:
     <<: *service
-    image: ${HEARTH_IMAGES:-ghcr.io/xlucifersx/hearth}-bridge-native:${HEARTH_VERSION:-0.1.0}
+    image: ${HEARTH_IMAGES:-ghcr.io/xlucifersx/hearth}-bridge-native:${HEARTH_VERSION:-0.1.1}
     network_mode: host
     environment:
       MQTT_URL: tcp://127.0.0.1:18831
@@ -169,7 +169,7 @@ services:
   # the app's Integrations.
   matter-bridge:
     <<: *service
-    image: ${HEARTH_IMAGES:-ghcr.io/xlucifersx/hearth}-matter-bridge:${HEARTH_VERSION:-0.1.0}
+    image: ${HEARTH_IMAGES:-ghcr.io/xlucifersx/hearth}-matter-bridge:${HEARTH_VERSION:-0.1.1}
     profiles: [extras]
     network_mode: host
     environment:
