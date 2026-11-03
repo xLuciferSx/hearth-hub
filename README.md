@@ -1,8 +1,7 @@
 # Hearth hub for Synology
 
 A self-hosted smart-home hub for a Synology NAS. It talks to your devices directly, runs your
-automations on the NAS, and keeps your data there. Home Assistant isn't needed, and neither is any
-other hub.
+automations on the NAS, and keeps your data there. It needs no other hub.
 
 It also runs on a mini PC, a Raspberry Pi 4 or 5, or any 64-bit Linux machine with Docker.
 
@@ -45,7 +44,7 @@ On another Linux machine, the same steps work from any folder.
 | `bridge-native` | The native drivers, including Matter | Always |
 | `bridge-zigbee` | Turns Zigbee2MQTT devices into Hearth devices | Always |
 | `mosquitto` | Internal message bus, never on your LAN | Always |
-| `matter-server` | Matter controller (a standalone server, not Home Assistant) | Always |
+| `matter-server` | Matter controller | Always |
 | `backup` | Nightly backups, 14 kept | Always |
 | `zigbee2mqtt` | Runs your Zigbee coordinator | Profile `zigbee` |
 | `matter-bridge`, `eufy-ws` | Alexa and Google, eufy cameras | Profile `extras` |
@@ -94,12 +93,6 @@ copy off the NAS, with Hyper Backup for example, and treat it as a secret.
 - SmartThings sign-in needs an https redirect page of your own.
 - Some drivers suit UK accounts: Octopus Energy and Ohme are UK services, and regional defaults for
   Alexa, eufy and Anker are in `.env`.
-
-## Moving from the Home Assistant version
-
-Earlier releases read devices through Home Assistant. This release doesn't, and it starts with a new
-data folder, so add your integrations again from the app. Home Assistant can keep running beside it,
-but only one program can hold a Zigbee stick, and a Matter device needs adding to Hearth as well.
 
 ## API
 
